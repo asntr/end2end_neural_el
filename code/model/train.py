@@ -162,13 +162,14 @@ def train():
     el_datasets, el_names = create_el_ed_pipelines(gmonly_flag=False, filenames=args.el_datasets, args=args)
 
     input_handle_ph = tf.placeholder(tf.string, shape=[], name="input_handle_ph")
-    iterator = tf.contrib.data.Iterator.from_string_handle(
+    iterator = tf.compat.v1.data.Iterator.from_string_handle(
         input_handle_ph, training_dataset.output_types, training_dataset.output_shapes)
     next_element = iterator.get_next()
-    #print(next_element)
 
     if args.ablations:
         from model.model_ablations import Model
+    elif args.elmo:
+        from model.model_elmo import Model
     else:
         from model.model import Model
     model = Model(args, next_element)
@@ -214,8 +215,11 @@ def train():
                 train_step += 1
                 if args.ffnn_l2maxnorm:
                     sess.run(model.ffnn_l2normalization_op_list)
-                _, loss = sess.run([model.train_op, model.loss], feed_dict={input_handle_ph: training_handle, model.dropout: args.dropout,
-                                                          model.lr: model.args.lr})
+                _, loss = sess.run([model.train_op, model.loss], feed_dict={
+                    input_handle_ph: training_handle, model.dropout: args.dropout,
+                    model.lr: model.args.lr
+                })
+                # print('WORDS', sess.run(model.words, feed_dict={input_handle_ph: training_handle}))
                 total_train_loss += loss
 
             args.eval_cnt += 1
@@ -303,7 +307,7 @@ def _parse_args():
                                                                            " training and run an evaluation epoch")
     parser.add_argument("--dim_char", type=int, default=100)
     parser.add_argument("--hidden_size_char", type=int, default=100, help="lstm on chars")
-    parser.add_argument("--hidden_size_lstm", type=int, default=300, help="lstm on word embeddings")
+    parser.add_argument("--hidden_size_lstm", type=int, default=1024, help="lstm on word embeddings")
 
     parser.add_argument("--use_chars", dest="use_chars", action='store_true', help="use character embeddings or not")
     parser.add_argument("--no_use_chars", dest="use_chars", action='store_false')
@@ -416,6 +420,7 @@ def _parse_args():
                                                                     "the final ffnn and we have the final score. choose any combination you want: e.g"
                                                                     "pem_local_global, pem_global, local_global, global, etc")
     parser.add_argument("--ablations", type=bool, default=False)
+    parser.add_argument("--elmo", type=bool, default=False)
     args = parser.parse_args()
 
     if args.training_name is None:
@@ -506,5 +511,3 @@ if __name__ == "__main__":
         train()
     except KeyboardInterrupt:
         terminate()
-
-
