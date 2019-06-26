@@ -145,14 +145,6 @@ def build_word_char_maps_restore():
         word2id, _, char2id, _, _, _ = pickle.load(handle)
     return word2id, char2id
 
-def cleanText(text):
-    text = text.strip().replace("\n", " ").replace("\r", " ")
-    text = replace_contraction(text)
-    text = replace_links(text, "link")
-    text = remove_numbers(text)
-    text = re.sub(r'[,!@#$%^&*)(|/><";:.?\'\\}{]',"",text)
-    text = text.lower()
-    return text
 
 class Chunker(object):
     def __init__(self):
@@ -204,10 +196,7 @@ class Chunker(object):
             self.par_cnt = 0      # paragraph counter (useful if we work per paragraph)
             self.sent_cnt = 0      # sentence counter (useful if we work per sentence)
             for line in fin:
-                line = line.rstrip()
-                line = ''.join([c for c in line if c not in set(string.punctuation) - {'*', '_', '.'}])
-                if not line:
-                    continue     # omit the '\n' character
+                line = line.rstrip() # omit the '\n' character
                 if line in self.chunk_ending:
                     if len(self.chunk_words) > 0:  # if we have continues *NL* *NL* do not return empty chunks
                         temp = self.compute_result(docid)
@@ -225,7 +214,7 @@ class Chunker(object):
                     # do not add this in our words list
                 elif line == '.':
                     self.sent_cnt += 1
-                    self.chunk_words.append(line)
+                    # self.chunk_words.append(line)
                 elif line.startswith('MMSTART_'):
                     ent_id = line[8:]   # assert that ent_id in wiki_name_id_map
                     self.ground_truth.append(ent_id)
@@ -237,7 +226,9 @@ class Chunker(object):
                     self.par_cnt = 0
                     self.sent_cnt = 0
                 else:
-                    self.chunk_words.append(line)
+                    clean_line = tc.main_cleaner(line)[0]
+                    if clean_line:
+                        self.chunk_words.append(clean_line)
 
         print(filepath, " chunker parsing errors: ", self.parsing_errors)
         self.parsing_errors = 0
