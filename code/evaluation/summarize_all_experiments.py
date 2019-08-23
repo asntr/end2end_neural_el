@@ -21,12 +21,16 @@ def process_experiment(ed_acc, el_acc, training_name):
         for line in fin:
             line = line.rstrip()
             if line.startswith("args.eval_cnt"):
+                print(training_name+'eval_cnt')
                 eval_cnt = line[line.rfind(' ')+1:]
             elif line.startswith("Evaluating ED datasets"):
+                print(training_name+'ed')
                 mode = "ed"
             elif line.startswith("Evaluating EL datasets"):
+                print(training_name+'el')
                 mode = "el"
             elif line.startswith(args.dev_set): #("aida_dev.txt"):
+                print(training_name+args.dev_set)
                 try:
                     micro_line = next(fin)
                     macro_line = next(fin)
@@ -34,6 +38,7 @@ def process_experiment(ed_acc, el_acc, training_name):
                     dev_f1 = float(line.split()[-1])
                     dev_pr = float(line.split()[2])
                     dev_re = float(line.split()[4])
+
                     if dev_f1 > best[mode+"_dev_f1"]:
                         best[mode+"_dev_f1"] = dev_f1
                         best[mode+"_dev_pr"] = dev_pr

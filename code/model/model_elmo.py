@@ -4,7 +4,7 @@
 import numpy as np
 import pickle
 import tensorflow as tf
-import tensorflow_hub as hub
+from bilm import BidirectionalLanguageModel, weight_layers
 import model.config as config
 from .base_model import BaseModel
 import model.util as util
@@ -24,7 +24,18 @@ class Model(BaseModel):
         self.begin_span = tf.cast(self.begin_span, tf.int32)
         self.end_span = tf.cast(self.end_span, tf.int32)
         self.words_len = tf.cast(self.words_len, tf.int32)
-        self.elmo = hub.Module("https://tfhub.dev/google/elmo/2", trainable=False)
+
+        base = '/Users/asntr/Projects/university/course_work/end2end_neural_el/'
+        options_file = base + "data/basic_data/elmo/elmo_2x4096_512_2048cnn_2xhighway_options.json"
+        weight_file = base + "data/basic_data/elmo/elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5"
+        token_embedding_file = base+"data/vocabulary/" + 'elmo_token_embeddings.hdf5'
+
+        self.bilm = BidirectionalLanguageModel(
+            options_file,
+            weight_file,
+            use_character_inputs=False,
+            embedding_weight_file=token_embedding_file
+        )
         """
         self.words:  tf.int64, shape=[None, None]   # shape = (batch size, max length of sentence in batch)
         self.words_len: tf.int32, shape=[None],     #   shape = (batch size)
@@ -64,28 +75,10 @@ class Model(BaseModel):
 
     def add_embeddings_op(self):
         """Defines self.word_embeddings"""
-
+        words_embeddings_op = self.bilm(self.words)
         with tf.variable_scope("words"):
-            # _word_embeddings = tf.Variable(
-            #         tf.constant(0.0, shape=[self.nwords, 300]),
-            #         name="_word_embeddings",
-            #         dtype=tf.float32,
-            #         trainable=False)
-            #
-            # self.word_embeddings_placeholder = tf.placeholder(tf.float32, [self.nwords, 300])
-            # self.word_embedding_init = _word_embeddings.assign(self.word_embeddings_placeholder)
-
-            word_embeddings = self.elmo(
-                inputs={
-                    "tokens": self.words,
-                    "sequence_len": self.words_len,
-                },
-                signature="tokens",
-                as_dict=True
-            )["elmo"]
-
-            self.word_embeddings = word_embeddings
-            print("word_embeddings (after lookup) ", word_embeddings)
+            self.word_embeddings = weight_layers('words', words_embeddings_op, l2_coef=0.0)['weighted_op']
+            print("word_embeddings (after lookup) ", self.word_embeddings)
 
         with tf.variable_scope("entities"):
             from preprocessing.util import load_wikiid2nnid
@@ -101,6 +94,7 @@ class Model(BaseModel):
 
             self.entity_embeddings = tf.nn.embedding_lookup(_entity_embeddings, self.cand_entities,
                                                        name="entity_embeddings")
+            self.entity_embeddings = util.ffnn(self.entity_embeddings, 1, 300, 300, dropout=None)
             self.pure_entity_embeddings = self.entity_embeddings
             if self.args.ent_vecs_regularization.startswith("l2"):  # 'l2' or 'l2dropout'
                 self.entity_embeddings = tf.nn.l2_normalize(self.entity_embeddings, dim=3)
@@ -122,7 +116,6 @@ class Model(BaseModel):
                     sequence_length=self.words_len, dtype=tf.float32)
             output = tf.concat([output_fw, output_bw], axis=-1)
             self.context_emb = tf.nn.dropout(output, self.dropout)
-
             print("CONTEXT EMB = ", self.context_emb)  # [batch, words, 300]
 
     def add_span_emb_op(self):

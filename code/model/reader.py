@@ -5,7 +5,7 @@ import pickle
 
 def parse_sequence_example(serialized):
     sequence_features={
-            "words": tf.FixedLenSequenceFeature([], dtype=tf.string),   # in order to have a vector. if i put [1] it will probably
+            "words": tf.FixedLenSequenceFeature([], dtype=tf.int64),   # in order to have a vector. if i put [1] it will probably
             # be a matrix with just one column
             # "chars": tf.VarLenFeature(tf.int64),
             # "chars_len": tf.FixedLenSequenceFeature([], dtype=tf.int64),

@@ -73,11 +73,12 @@ class BaseModel(object):
                 checkpoint_path = self.my_latest_checkpoint(self.args.checkpoints_folder+"el/")
             elif option == "latest":
                 print("Reloading the latest trained model...(either ed or el)")
-                ed = self.my_latest_checkpoint(self.args.checkpoints_folder+"ed/")
-                el = self.my_latest_checkpoint(self.args.checkpoints_folder+"el/")
-                ed_eval_cnt = int(ed[ed.rfind('-') + 1:])
-                el_eval_cnt = int(el[el.rfind('-') + 1:])
-                if ed_eval_cnt >= el_eval_cnt:
+                # ed = self.my_latest_checkpoint(self.args.checkpoints_folder+"ed/")
+                # el = self.my_latest_checkpoint(self.args.checkpoints_folder+"el/")
+                # ed_eval_cnt = int(ed[ed.rfind('-') + 1:])
+                # el_eval_cnt = int(el[el.rfind('-') + 1:])
+                # if ed_eval_cnt >= el_eval_cnt:
+                if False:
                     checkpoint_path = self.my_latest_checkpoint(self.args.checkpoints_folder+"ed/")
                     option = "ed"
                 else:

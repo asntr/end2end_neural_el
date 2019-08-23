@@ -9,21 +9,15 @@ import preprocessing.util as util
 from termcolor import colored
 import tensorflow as tf
 
+from bilm import TokenBatcher, dump_token_embeddings
+
 
 class VocabularyCounter(object):
     """counts the frequency of each word and each character in the corpus. With each
     file that it processes it increases the counters. So one frequency vocab for all the files
     that it processes."""
     def __init__(self, lowercase_emb=False):
-        import gensim
-        self.model = gensim.models.KeyedVectors.load_word2vec_format(
-        config.base_folder+"data/basic_data/wordEmbeddings/Word2Vec/GoogleNews-vectors-negative300.bin", binary=True)
-        """lowercase_emb=False if True then we lowercase the word for counting of
-        frequencies and hence for finding the pretrained embedding."""
         self.word_freq = defaultdict(int)
-        self.char_freq = defaultdict(int)    # how many times each character is encountered
-        self.lowercase_emb = lowercase_emb
-        self.not_in_word2vec_cnt = 0
         self.all_words_cnt = 0
 
     def add(self, filepath):
@@ -35,26 +29,18 @@ class VocabularyCounter(object):
                         line.startswith("*NL*"):
                     continue
                 line = line.rstrip()       # omit the '\n' character
-                word = line.lower() if self.lowercase_emb else line
+                word = line
                 self.all_words_cnt += 1
-                if word not in self.model:
-                    self.not_in_word2vec_cnt += 1
-                else:
-                    self.word_freq[word] += 1
-                for c in line:
-                    self.char_freq[c] += 1
+                self.word_freq[word] += 1
 
     def print_statistics(self, word_edges=None,
                          char_edges=None):
         """Print some statistics about word and char frequency."""
         if word_edges is None:
             word_edges = [1, 2, 3, 6, 11, 21, 31, 51, 76, 101, 201, np.inf]
-        if char_edges is None:
-            char_edges = [1, 6, 11, 21, 51, 101, 201, 501, 1001, 2001, np.inf]
-        print("not_in_word2vec_cnt = ", self.not_in_word2vec_cnt)
         print("all_words_cnt = ", self.all_words_cnt)
         print("some frequency statistics. The bins are [...) ")
-        for d, name, edges in zip([self.word_freq, self.char_freq], ["word", "character"], [word_edges, char_edges]):
+        for d, name, edges in zip([self.word_freq], ["word"], [word_edges]):
             hist_values, _ = np.histogram(list(d.values()), edges)
             cum_sum = np.cumsum(hist_values[::-1])
             print(name, " frequency histogram, edges: ", edges)
@@ -62,16 +48,21 @@ class VocabularyCounter(object):
             print("absolute cumulative (right to left):    ", cum_sum[::-1])
             print("probabilites cumulative (right to left):", (cum_sum / np.sum(hist_values))[::-1])
 
-    def serialize(self, folder=None, name="vocab_freq.pickle", bilm_name='bilm_vocab.txt'):
+    def serialize(self, folder=None, name="vocab_bilm.txt"):
         if folder is None:
             folder = config.base_folder+"data/vocabulary/"
         if not os.path.exists(folder):
             os.makedirs(folder)
-        with open(folder+name, 'wb') as handle:
-            pickle.dump((self.word_freq, self.char_freq), handle)
-        with open(folder+bilm_name, 'w+') as bilm_handle:
+        vocab_file =  folder+name
+        with open(folder+name, 'w+') as bilm_handle:
             all_tokens = set(['<S>', '</S>'] + list(self.word_freq))
             bilm_handle.write('\n'.join(all_tokens))
+        options_file = config.base_folder + "data/basic_data/elmo/elmo_2x4096_512_2048cnn_2xhighway_options.json"
+        weight_file = config.base_folder + "data/basic_data/elmo/elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5"
+        token_embedding_file = config.base_folder+"data/vocabulary/" + 'elmo_token_embeddings.hdf5'
+        dump_token_embeddings(
+            vocab_file, options_file, weight_file, token_embedding_file
+        )
 
     def count_datasets_vocabulary(self):
         new_dataset_folder = config.base_folder+"data/new_datasets/"
@@ -84,67 +75,7 @@ class VocabularyCounter(object):
             print("Processing dataset: ", dataset)
             self.add(new_dataset_folder+dataset)
         self.print_statistics()
-        self.serialize(folder=config.base_folder+"data/vocabulary/",
-                       name="vocab_freq.pickle", bilm_name='bilm_vocab.txt')
-
-
-def build_word_char_maps():
-    output_folder = config.base_folder+"data/tfrecords/"+args.experiment_name+"/"
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-    with open(config.base_folder+"data/vocabulary/vocab_freq.pickle", 'rb') as handle:
-        word_freq, char_freq = pickle.load(handle)
-    word2id = dict()
-    id2word = dict()
-    char2id = dict()
-    id2char = dict()
-
-    wcnt = 0   # unknown word
-    word2id["<wunk>"] = wcnt
-    id2word[wcnt] = "<wunk>"
-    wcnt += 1
-    ccnt = 0   # unknown character
-    char2id["<u>"] = ccnt
-    id2char[ccnt] = "<u>"
-    ccnt += 1
-
-    # for every word in the corpus (we have already filtered out the words that are not in word2vec)
-    for word in word_freq:
-        if word_freq[word] >= args.word_freq_thr:
-            word2id[word] = wcnt
-            id2word[wcnt] = word
-            wcnt += 1
-
-    for c in char_freq:
-        if char_freq[c] >= args.char_freq_thr:
-            char2id[c] = ccnt
-            id2char[ccnt] = c
-            ccnt += 1
-    assert(len(word2id) == wcnt)
-    assert(len(char2id) == ccnt)
-    print("words in vocabulary: ", wcnt)
-    print("characters in vocabulary: ", ccnt)
-    with open(output_folder+"word_char_maps.pickle", 'wb') as handle:
-        pickle.dump((word2id, id2word, char2id, id2char, args.word_freq_thr,
-                     args.char_freq_thr), handle)
-
-    import gensim
-    model = gensim.models.KeyedVectors.load_word2vec_format(
-        config.base_folder+"data/basic_data/wordEmbeddings/Word2Vec/GoogleNews-vectors-negative300.bin", binary=True)
-    embedding_dim = len(model['queen'])
-    embeddings_array = np.empty((wcnt, embedding_dim))   # id2emb
-    embeddings_array[0] = np.zeros(embedding_dim)
-    for i in range(1, wcnt):
-        embeddings_array[i] = model[id2word[i]]
-    np.save(output_folder+'embeddings_array.npy', embeddings_array)
-    return word2id, char2id
-
-
-def build_word_char_maps_restore():
-    output_folder = config.base_folder+"data/tfrecords/"+args.experiment_name+"/"
-    with open(output_folder+"word_char_maps.pickle", 'rb') as handle:
-        word2id, _, char2id, _, _, _ = pickle.load(handle)
-    return word2id, char2id
+        self.serialize(folder=config.base_folder+"data/vocabulary/")
 
 
 class Chunker(object):
@@ -178,7 +109,7 @@ class Chunker(object):
             len(self.begin_gm) != len(self.ground_truth):
             no_errors_flag = False
         for b, e in zip(self.begin_gm, self.end_gm):
-            if e <= b or b >= len(self.chunk_words) + 1 or e > len(self.chunk_words) + 1:
+            if e <= b or b >= len(self.chunk_words) or e > len(self.chunk_words):
                 no_errors_flag = False
 
         self.new_chunk()
@@ -219,9 +150,9 @@ class Chunker(object):
                 elif line.startswith('MMSTART_'):
                     ent_id = line[8:]   # assert that ent_id in wiki_name_id_map
                     self.ground_truth.append(ent_id)
-                    self.begin_gm.append(len(self.chunk_words))
+                    self.begin_gm.append(len(self.chunk_words)) # bilm batcher will make it +1
                 elif line == 'MMEND':
-                    self.end_gm.append(len(self.chunk_words))
+                    self.end_gm.append(len(self.chunk_words)) # bilm batcher will make it +1
                 elif line.startswith('DOCSTART_'):
                     docid = line[9:]
                     self.par_cnt = 0
@@ -400,7 +331,6 @@ class SamplesGenerator(object):
 SampleEncoded = namedtuple("SampleEncoded",
                                 ["chunk_id",
                                 "words", 'words_len',   # list,  scalar
-                                'chars', 'chars_len',   # list of lists,  list
                                 'begin_spans', "end_spans",  'spans_len',   # the first 2 are lists, last is scalar
                                 "cand_entities", "cand_entities_scores", 'cand_entities_labels',  # lists of lists
                                 'cand_entities_len',  # list
@@ -414,8 +344,7 @@ class EncoderGenerator(object):
     entity universe."""
     def __init__(self):
         self._generator = SamplesGenerator()
-        self._word2id, self._char2id = build_word_char_maps()
-        #self._word2id, self._char2id = build_word_char_maps_restore()  # alternative
+        self._batcher = TokenBatcher(config.base_folder+"data/vocabulary/"+"vocab_bilm.txt")
         self._wikiid2nnid = util.load_wikiid2nnid(args.entity_extension)
 
     def set_gmonly_mode(self):
@@ -435,14 +364,7 @@ class EncoderGenerator(object):
         cand_entities_not_in_universe_cnt = 0
         samples_with_errors = 0
         for sample in self._generator.process(filepath):
-            words = []
-            chars = []
-            for word in sample.chunk_words:
-                words.append(self._word2id[word] if word in self._word2id
-                             else self._word2id["<wunk>"])
-                chars.append([self._char2id[c] if c in self._char2id else self._char2id["<u>"]
-                              for c in word])
-            chars_len = [len(word) for word in chars]
+            words = self._batcher.batch_sentences([sample.chunk_words]).tolist()[0]
 
             ground_truth_enc = [self._wikiid2nnid[gt] if gt in self._wikiid2nnid else self._wikiid2nnid["<u>"]
                             for gt in sample.ground_truth]
@@ -460,8 +382,7 @@ class EncoderGenerator(object):
                         sample.cand_entities, sample.cand_entities_scores, sample.ground_truth)
 
                 yield SampleEncoded(chunk_id=sample.chunk_id,
-                                    words=words, words_len=len(words),
-                                    chars=chars, chars_len=chars_len,
+                                    words=words, words_len=len(words) - 2,
                                     begin_spans=sample.begin_gm, end_spans=sample.end_gm, spans_len=len(sample.begin_gm),
                                     cand_entities=cand_entities, cand_entities_scores=cand_entities_scores,
                                     cand_entities_labels=cand_entities_labels,
@@ -487,8 +408,7 @@ class EncoderGenerator(object):
                         sample.cand_entities, sample.cand_entities_scores, span_ground_truth)
 
                 yield SampleEncoded(chunk_id=sample.chunk_id,
-                                    words=words, words_len=len(words),
-                                    chars=chars, chars_len=chars_len,
+                                    words=words, words_len=len(words) - 2,
                                     begin_spans=sample.begin_spans, end_spans=sample.end_spans, spans_len=len(sample.begin_spans),
                                     cand_entities=cand_entities, cand_entities_scores=cand_entities_scores,
                                     cand_entities_labels=cand_entities_labels,
@@ -589,8 +509,6 @@ class TFRecordsGenerator(object):
         })
         feature_list = {
                 "words": _int64_feature_list(sample.words),
-                "chars": _int64list_feature_list(sample.chars),
-                "chars_len": _int64_feature_list(sample.chars_len),
                 "begin_span": _int64_feature_list(sample.begin_spans),
                 "end_span": _int64_feature_list(sample.end_spans),
                 "cand_entities": _int64list_feature_list(sample.cand_entities),
