@@ -170,6 +170,8 @@ def train():
         from model.model_ablations import Model
     elif args.elmo:
         from model.model_elmo import Model
+    elif args.bert:
+        from model.model_bert import Model
     else:
         from model.model import Model
     model = Model(args, next_element)
@@ -421,6 +423,7 @@ def _parse_args():
                                                                     "pem_local_global, pem_global, local_global, global, etc")
     parser.add_argument("--ablations", type=bool, default=False)
     parser.add_argument("--elmo", type=bool, default=False)
+    parser.add_argument("--bert", type=bool, default=False)
     args = parser.parse_args()
 
     if args.training_name is None:
