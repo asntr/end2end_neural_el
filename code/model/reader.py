@@ -5,13 +5,16 @@ import pickle
 
 def parse_sequence_example(serialized):
     sequence_features={
-            "words": tf.FixedLenSequenceFeature([], dtype=tf.int64),   # in order to have a vector. if i put [1] it will probably
+            "words": tf.FixedLenSequenceFeature([], dtype=tf.int64),
+            #"mask_ids": tf.FixedLenSequenceFeature([], dtype=tf.int64),
+            #"segs_ids": tf.FixedLenSequenceFeature([], dtype=tf.int64),   # in order to have a vector. if i put [1] it will probably
             # be a matrix with just one column
             # "chars": tf.VarLenFeature(tf.int64),
             # "chars_len": tf.FixedLenSequenceFeature([], dtype=tf.int64),
             "begin_span": tf.FixedLenSequenceFeature([], dtype=tf.int64),
             "end_span": tf.FixedLenSequenceFeature([], dtype=tf.int64),
             "cand_entities": tf.VarLenFeature(tf.int64),
+            "cand_entities_ids": tf.VarLenFeature(tf.int64),
             "cand_entities_scores": tf.VarLenFeature(tf.float32),
             "cand_entities_labels": tf.VarLenFeature(tf.int64),
             "cand_entities_len": tf.FixedLenSequenceFeature([], dtype=tf.int64),
@@ -31,10 +34,12 @@ def parse_sequence_example(serialized):
         },
         sequence_features=sequence_features)
 
-    return (context["chunk_id"], sequence["words"], context["words_len"],\
+    return (context["chunk_id"], tf.cast(sequence["words"], dtype=tf.int32), context["words_len"],\
+           #tf.cast(sequence["mask_ids"], dtype=tf.int32), tf.cast(sequence["segs_ids"], dtype=tf.int32),\
            # tf.sparse_tensor_to_dense(sequence["chars"]), sequence["chars_len"],\
            sequence["begin_span"], sequence["end_span"], context["spans_len"],\
            tf.sparse_tensor_to_dense(sequence["cand_entities"]),\
+           tf.sparse_tensor_to_dense(sequence["cand_entities_ids"]),\
            tf.sparse_tensor_to_dense(sequence["cand_entities_scores"]),\
            tf.sparse_tensor_to_dense(sequence["cand_entities_labels"]),\
            sequence["cand_entities_len"],\

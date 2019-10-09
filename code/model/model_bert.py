@@ -4,36 +4,10 @@
 import numpy as np
 import pickle
 import tensorflow as tf
-from bilm import BidirectionalLanguageModel, weight_layers
 import model.config as config
 from .base_model import BaseModel
 import model.util as util
-
-def get_angles(pos, i, d_model):
-    angle_rates = 1 / np.power(10000, (2 * (i//2)) / np.float32(d_model))
-    return pos * angle_rates
-
-def positional_encoding(position, d_model):
-    angle_rads = get_angles(np.arange(position)[:, np.newaxis],
-                          np.arange(d_model)[np.newaxis, :],
-                          d_model)
-
-  # apply sin to even indices in the array; 2i
-    angle_rads[:, 0::2] = np.sin(angle_rads[:, 0::2])
-
-  # apply cos to odd indices in the array; 2i+1
-    angle_rads[:, 1::2] = np.cos(angle_rads[:, 1::2])
-
-    pos_encoding = angle_rads[np.newaxis, ...]
-
-    return tf.cast(pos_encoding, dtype=tf.float32)
-
-def attention_fun(Q, K):
-    attention = tf.matmul(Q, K, transpose_b=True)  # [batch_size, sequence_length, sequence_length]
-    d_k = tf.cast(tf.shape(K)[-1], dtype=tf.float32)
-    attention = tf.divide(attention, tf.sqrt(d_k))
-    attention = tf.nn.softmax(attention, dim=-1)  # [batch_size, sequence_length, sequence_length]
-    return attention
+import tensorflow_hub as hub
 
 
 class Model(BaseModel):
@@ -42,8 +16,9 @@ class Model(BaseModel):
         super().__init__(args)
 
         self.chunk_id, self.words, self.words_len,\
+        self.mask_ids, self.segs_ids,\
         self.begin_span, self.end_span, self.spans_len,\
-        self.cand_entities, self.cand_entities_ids, self.cand_entities_scores, self.cand_entities_labels,\
+        self.cand_entities, self.cand_entities_scores, self.cand_entities_labels,\
         self.cand_entities_len, self.ground_truth, self.ground_truth_len,\
         self.begin_gm, self.end_gm = next_element
 
@@ -51,26 +26,13 @@ class Model(BaseModel):
         self.end_span = tf.cast(self.end_span, tf.int32)
         self.words_len = tf.cast(self.words_len, tf.int32)
 
-        base = '/home/ubuntu/end2end_neural_el/'
-        options_file = base + "data/basic_data/elmo/elmo_2x1024_128_2048cnn_1xhighway_options.json"
-        weight_file = base + "data/basic_data/elmo/elmo_2x1024_128_2048cnn_1xhighway_weights.hdf5"
-        token_embedding_file = base+"data/vocabulary/" + 'embeddings.hdf5'
-        #wiki_embedding_file = base+"data/vocabulary/" + 'wiki_embeddings_light.hdf5'
+        bert_path = "https://tfhub.dev/google/bert_cased_L-12_H-768_A-12/1"
 
-        self.bilm = BidirectionalLanguageModel(
-            options_file,
-            weight_file,
-            use_character_inputs=False,
-            embedding_weight_file=token_embedding_file
+        self.bert = hub.Module(
+            bert_path, trainable=True, name="bert_module"
         )
-
-        self.entity_bilm = BidirectionalLanguageModel(
-            options_file,
-            weight_file,
-            use_character_inputs=False,
-            embedding_weight_file=token_embedding_file,
-            max_batch_size=20000
-        )
+        # self.words = tf.Print(self.words, [tf.shape(self.words), tf.shape(self.mask_ids), tf.shape(self.segs_ids)], 'SHAPES')
+        self.bert_inputs = dict(input_ids=self.words, input_mask=self.mask_ids, segment_ids=self.segs_ids)
         """
         self.words:  tf.int64, shape=[None, None]   # shape = (batch size, max length of sentence in batch)
         self.words_len: tf.int32, shape=[None],     #   shape = (batch size)
@@ -90,11 +52,11 @@ class Model(BaseModel):
         self.end_gm = tf.placeholder(tf.int64, shape=[None, None],
         """
 
-        with open(config.base_folder +"data/tfrecords/" + self.args.experiment_name +
-                          "/word_char_maps.pickle", 'rb') as handle:
-            _, id2word, _, id2char, _, _ = pickle.load(handle)
-            self.nwords = len(id2word)
-            self.nchars = len(id2char)
+        # with open(config.base_folder +"data/tfrecords/" + self.args.experiment_name +
+        #                   "/word_char_maps.pickle", 'rb') as handle:
+        #     _, id2word, _, id2char, _, _ = pickle.load(handle)
+        #     self.nwords = len(id2word)
+        #     self.nchars = len(id2char)
 
         self.loss_mask = self._sequence_mask_v13(self.cand_entities_len, tf.shape(self.cand_entities_scores)[2])
 
@@ -105,58 +67,31 @@ class Model(BaseModel):
 
     def init_embeddings(self):
         print("\n!!!! init embeddings !!!!\n")
-        #entity_embeddings_nparray = util.load_ent_vecs(self.args)
-        #self.sess.run(self.entity_embedding_init, feed_dict={self.entity_embeddings_placeholder: entity_embeddings_nparray})
+        entity_embeddings_nparray = util.load_ent_vecs(self.args)
+        self.sess.run(self.entity_embedding_init, feed_dict={self.entity_embeddings_placeholder: entity_embeddings_nparray})
 
     def add_embeddings_op(self):
         """Defines self.word_embeddings"""
-        b_size = tf.shape(self.cand_entities_ids)[0]
-        cand_spans = tf.shape(self.cand_entities_ids)[1]
-        cand_ents = tf.shape(self.cand_entities_ids)[2]
-        entities = tf.reshape(self.cand_entities_ids, [b_size, cand_spans, cand_ents // 22, 22])
-        entities = tf.reshape(entities, [-1, 22])
-        zeros_count = tf.reduce_sum(tf.cast(tf.equal(entities, 0), tf.int32), axis=1)
-        lengths = tf.math.maximum(0, 20 - zeros_count)
-
-        with tf.variable_scope('bilm_1'):
-            entitites_embeddings_op = self.entity_bilm(entities) # [batch_size, max_token]
-        with tf.variable_scope('bilm_2'):
-            words_embeddings_op = self.bilm(self.words)
-
         with tf.variable_scope("words"):
-            self.word_embeddings = weight_layers('words', words_embeddings_op, l2_coef=0.0)['weighted_op']
+            self.word_embeddings = self.bert(inputs=self.bert_inputs,
+                as_dict=True, signature="tokens"
+            )["sequence_output"][:, 1:-1, ...]
             print("word_embeddings (after lookup) ", self.word_embeddings)
 
         with tf.variable_scope("entities"):
             from preprocessing.util import load_wikiid2nnid
             self.nentities = len(load_wikiid2nnid(extension_name=self.args.entity_extension))
-            self.entity_embeddings =  tf.reshape(weight_layers(
-                'entities',
-                 entitites_embeddings_op,
-                 l2_coef=0.0
-            )['weighted_op'], [b_size, cand_spans, cand_ents // 22, 20, -1]) # [batch_size, max_token, vdim]
+            _entity_embeddings = tf.Variable(
+                tf.constant(0.0, shape=[self.nentities, 300]),
+                name="_entity_embeddings",
+                dtype=tf.float32,
+                trainable=True)
 
-            #cell_fw = tf.contrib.rnn.LSTMCell(self.args.hidden_size_lstm // 2)
-            #cell_bw = tf.contrib.rnn.LSTMCell(self.args.hidden_size_lstm // 2)
-            #(output_fw, output_bw), _ = tf.nn.bidirectional_dynamic_rnn(
-            #        cell_fw, cell_bw, output,
-            #        sequence_length=lengths, dtype=tf.float32)
-            #output = tf.concat([output_fw, output_bw], axis=-1)
-            #output = tf.concat([output[:, 0, :], output[:, -1, :]], axis=-1)
+            self.entity_embeddings_placeholder = tf.placeholder(tf.float32, [self.nentities, 300])
+            self.entity_embedding_init = _entity_embeddings.assign(self.entity_embeddings_placeholder)
 
-            # coeffs = tf.nn.softmax(tf.squeeze(tf.layers.dense(output, 1)))
-            # output = tf.reduce_sum(output * coeffs[..., None], 1)
-            # self.entity_embeddings = tf.layers.dense(tf.reshape(output, [b_size, cand_spans, cand_ents // 22, 256]), 300)
-
-            #mask = tf.math.logical_not(tf.equal(entities, 0)[:, 1:-1])
-            #Q = tf.layers.dense(output, self.args.hidden_size_lstm)  # [batch_size, sequence_length, hidden_dim]
-            #K = tf.layers.dense(output, self.args.hidden_size_lstm)  # [batch_size, sequence_length, hidden_dim]
-            #V = tf.layers.dense(output, 300)  # [batch_size, sequence_length, n_classes]
-            #query_value_attention_seq = tf.keras.layers.Attention()([Q, V, K], [mask, mask])
-            #query_value_attention = tf.keras.layers.GlobalAveragePooling1D()(query_value_attention_seq)
-            #self.entity_embeddings = tf.reshape(query_value_attention, [b_size, cand_spans, cand_ents // 22, -1])
-
-
+            self.entity_embeddings = tf.nn.embedding_lookup(_entity_embeddings, self.cand_entities,
+                                                       name="entity_embeddings")
             # self.entity_embeddings = util.ffnn(self.entity_embeddings, 1, 300, 300, dropout=None)
             self.pure_entity_embeddings = self.entity_embeddings
             if self.args.ent_vecs_regularization.startswith("l2"):  # 'l2' or 'l2dropout'
@@ -172,12 +107,6 @@ class Model(BaseModel):
         context-aware word embeddings x_k)"""
 
         with tf.variable_scope("context-bi-lstm"):
-            #Q = tf.layers.dense(self.word_embeddings, self.args.hidden_size_lstm)  # [batch_size, sequence_length, hidden_dim]
-            #K = tf.layers.dense(self.word_embeddings, self.args.hidden_size_lstm)  # [batch_size, sequence_length, hidden_dim]
-            #V = tf.layers.dense(self.word_embeddings, 300)  # [batch_size, sequence_length, n_classes]
-            #attention = attention_fun(Q, K)  # [batch_size, sequence_length, sequence_length]
-            #output = tf.matmul(attention, V)  # [batch_size, sequence_length, n_classes]
-
             cell_fw = tf.contrib.rnn.LSTMCell(self.args.hidden_size_lstm)
             cell_bw = tf.contrib.rnn.LSTMCell(self.args.hidden_size_lstm)
             (output_fw, output_bw), _ = tf.nn.bidirectional_dynamic_rnn(
@@ -185,7 +114,6 @@ class Model(BaseModel):
                     sequence_length=self.words_len, dtype=tf.float32)
             output = tf.concat([output_fw, output_bw], axis=-1)
             self.context_emb = tf.nn.dropout(output, self.dropout)
-            #self.context_emb = self.word_embeddings
             print("CONTEXT EMB = ", self.context_emb)  # [batch, words, 300]
 
     def add_span_emb_op(self):
@@ -267,18 +195,14 @@ class Model(BaseModel):
             # the span embedding can have different size depending on the chosen hyperparameters. We project it to 300
             # dims to match the entity embeddings  (formula 4)
             if self.args.span_emb_ffnn[0] == 0:
-                span_emb_projected = util.projection(self.span_emb, 256)
+                span_emb_projected = util.projection(self.span_emb, 300)
             else:
                 hidden_layers, hidden_size = self.args.span_emb_ffnn[0], self.args.span_emb_ffnn[1]
                 span_emb_projected = util.ffnn(self.span_emb, hidden_layers, hidden_size, 300,
                                                self.dropout if self.args.ffnn_dropout else None)
                 #print("span_emb_projected = ", span_emb_projected)
         # formula (6) <x^m, y_j>   computation. this is the lstm score
-        coeffs = tf.nn.softmax(tf.matmul(span_emb_projected[:, :, None, None, :], self.entity_embeddings, transpose_b=True))
-        coeffs = tf.transpose(coeffs, [0, 1, 2, 4, 3])
-        ent_emb = tf.reduce_sum(coeffs * self.entity_embeddings, -2)
-
-        scores = tf.matmul(tf.expand_dims(span_emb_projected, 2), ent_emb, transpose_b=True)
+        scores = tf.matmul(tf.expand_dims(span_emb_projected, 2), self.entity_embeddings, transpose_b=True)
         #print("scores = ", scores)
         self.similarity_scores = tf.squeeze(scores, axis=2)  # [batch, num_mentions, 1, 30]
         #print("scores = ", self.similarity_scores)   # [batch, num_mentions, 30]

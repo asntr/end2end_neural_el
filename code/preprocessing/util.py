@@ -60,6 +60,18 @@ def load_entity_extension(wikiid2nnid, extension_name):
     print("original entities: ", max_nnid + 1, " extension entities: ", len(wikiid2nnid) - (max_nnid+1))
 
 
+def load_entity_summary_map():
+    filepath = config.base_folder + "data/entities/" + "summary_prep"
+    res = {}
+    with open(filepath) as fin:
+        for line in fin:
+            try:
+                docid, sent = line.strip().split('\t', 1)
+                res[docid] = sent.split()
+            except ValueError:
+                pass
+    return res
+
 def reverse_dict(d, unique_values=False):
     new_d = dict()
     for k, v in d.items():
@@ -462,4 +474,3 @@ if __name__ == "__main__":
     #entity_name_id_map_from_dump()
     #compare_name_id_maps()
     #test_wiki_name_id_map_txt_conflicts_when_lowering():
-

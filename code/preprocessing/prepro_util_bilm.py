@@ -48,21 +48,21 @@ class VocabularyCounter(object):
             print("absolute cumulative (right to left):    ", cum_sum[::-1])
             print("probabilites cumulative (right to left):", (cum_sum / np.sum(hist_values))[::-1])
 
-    def serialize(self, folder=None, name="vocab_bilm.txt"):
+    def serialize(self, folder=None, name="vocab_2.txt"):
         if folder is None:
             folder = config.base_folder+"data/vocabulary/"
         if not os.path.exists(folder):
             os.makedirs(folder)
         vocab_file =  folder+name
-        with open(folder+name, 'w+') as bilm_handle:
-            all_tokens = set(['<S>', '</S>'] + list(self.word_freq))
-            bilm_handle.write('\n'.join(all_tokens))
-        options_file = config.base_folder + "data/basic_data/elmo/elmo_2x4096_512_2048cnn_2xhighway_options.json"
-        weight_file = config.base_folder + "data/basic_data/elmo/elmo_2x4096_512_2048cnn_2xhighway_weights.hdf5"
-        token_embedding_file = config.base_folder+"data/vocabulary/" + 'elmo_token_embeddings.hdf5'
-        dump_token_embeddings(
-            vocab_file, options_file, weight_file, token_embedding_file
-        )
+        # with open(folder+name, 'w+') as bilm_handle:
+        #     all_tokens = set(['<S>', '</S>'] + list(self.word_freq))
+        #     bilm_handle.write('\n'.join(all_tokens))
+        # options_file = config.base_folder + "data/basic_data/elmo/elmo_2x1024_128_2048cnn_1xhighway_options.json"
+        # weight_file = config.base_folder + "data/basic_data/elmo/elmo_2x1024_128_2048cnn_1xhighway_weights.hdf5"
+        # token_embedding_file = config.base_folder+"data/vocabulary/" + 'elmo_light_embeddings.hdf5'
+        # dump_token_embeddings(
+        #     vocab_file, options_file, weight_file, token_embedding_file
+        # )
 
     def count_datasets_vocabulary(self):
         new_dataset_folder = config.base_folder+"data/new_datasets/"
@@ -332,7 +332,7 @@ SampleEncoded = namedtuple("SampleEncoded",
                                 ["chunk_id",
                                 "words", 'words_len',   # list,  scalar
                                 'begin_spans', "end_spans",  'spans_len',   # the first 2 are lists, last is scalar
-                                "cand_entities", "cand_entities_scores", 'cand_entities_labels',  # lists of lists
+                                "cand_entities", "cand_entities_ids", "cand_entities_scores", 'cand_entities_labels',  # lists of lists
                                 'cand_entities_len',  # list
                                 "ground_truth", "ground_truth_len",
                                 'begin_gm', 'end_gm'])  # list
@@ -344,8 +344,9 @@ class EncoderGenerator(object):
     entity universe."""
     def __init__(self):
         self._generator = SamplesGenerator()
-        self._batcher = TokenBatcher(config.base_folder+"data/vocabulary/"+"vocab_bilm.txt")
+        self._batcher = TokenBatcher(config.base_folder+"data/vocabulary/"+"vocab_2.txt")
         self._wikiid2nnid = util.load_wikiid2nnid(args.entity_extension)
+        self._wikii2summary = util.load_entity_summary_map()
 
     def set_gmonly_mode(self):
         self._generator.set_gmonly_mode()
@@ -377,16 +378,16 @@ class EncoderGenerator(object):
                 samples_with_errors += 1
                 continue
             if isinstance(sample, GmonlySample):
-                cand_entities, cand_entities_scores, cand_entities_labels, not_in_universe_cnt = \
+                cand_entities, cand_entities_ids, cand_entities_scores, cand_entities_labels, not_in_universe_cnt = \
                     self._encode_cand_entities_and_labels(
                         sample.cand_entities, sample.cand_entities_scores, sample.ground_truth)
 
                 yield SampleEncoded(chunk_id=sample.chunk_id,
                                     words=words, words_len=len(words) - 2,
                                     begin_spans=sample.begin_gm, end_spans=sample.end_gm, spans_len=len(sample.begin_gm),
-                                    cand_entities=cand_entities, cand_entities_scores=cand_entities_scores,
+                                    cand_entities=cand_entities, cand_entities_ids=cand_entities_ids, cand_entities_scores=cand_entities_scores,
                                     cand_entities_labels=cand_entities_labels,
-                                    cand_entities_len=[len(t) for t in cand_entities],
+                                    cand_entities_len=[len(t) // 22 for t in cand_entities],
                                     ground_truth=ground_truth_enc, ground_truth_len=len(sample.ground_truth),
                                     begin_gm=[], end_gm=[])
 
@@ -403,16 +404,16 @@ class EncoderGenerator(object):
                         span_ground_truth.append(sample.ground_truth[gm_spans.index((left, right))])
                     else:
                         span_ground_truth.append(-1)   # this span is not a gm
-                cand_entities, cand_entities_scores, cand_entities_labels, not_in_universe_cnt = \
+                cand_entities, cand_entities_ids, cand_entities_scores, cand_entities_labels, not_in_universe_cnt = \
                     self._encode_cand_entities_and_labels(
                         sample.cand_entities, sample.cand_entities_scores, span_ground_truth)
 
                 yield SampleEncoded(chunk_id=sample.chunk_id,
                                     words=words, words_len=len(words) - 2,
                                     begin_spans=sample.begin_spans, end_spans=sample.end_spans, spans_len=len(sample.begin_spans),
-                                    cand_entities=cand_entities, cand_entities_scores=cand_entities_scores,
+                                    cand_entities=cand_entities, cand_entities_ids=cand_entities_ids, cand_entities_scores=cand_entities_scores,
                                     cand_entities_labels=cand_entities_labels,
-                                    cand_entities_len=[len(t) for t in cand_entities],
+                                    cand_entities_len=[len(t) // 22 for t in cand_entities],
                                     ground_truth=ground_truth_enc, ground_truth_len=len(sample.ground_truth),
                                     begin_gm=sample.begin_gm, end_gm=sample.end_gm)
 
@@ -432,24 +433,32 @@ class EncoderGenerator(object):
          of candidate entities array) is correct. Returns the filtered cand_entities
         and the corresponding label (they have the same shape)"""
         cand_entities = []
+        cand_entities_ids = []
         cand_entities_scores = []
         cand_entities_labels = []
         not_in_universe_cnt = 0
         for cand_ent_l, cand_scores_l, gt in zip(cand_entities_p, cand_entities_scores_p, ground_truth_p):
             ent_l = []
+            ids_l = []
             score_l = []
             label_l = []
             for cand_ent, score in zip(cand_ent_l, cand_scores_l):
                 if cand_ent in self._wikiid2nnid:  # else continue, this entity not in our universe
+                    summary = self._wikii2summary[cand_ent]
+                    tokens = list(filter(None, self._batcher.batch_sentences([summary]).tolist()[0]))
+                    while len(tokens) < 22:
+                        tokens.append(0)
                     ent_l.append(self._wikiid2nnid[cand_ent])
+                    ids_l.extend(tokens)
                     score_l.append(score)
                     label_l.append(1 if cand_ent == gt else 0)
                 else:
                     not_in_universe_cnt += 1
             cand_entities.append(ent_l)
+            cand_entities_ids.append(ids_l)
             cand_entities_scores.append(score_l)
             cand_entities_labels.append(label_l)
-        return cand_entities, cand_entities_scores, cand_entities_labels, not_in_universe_cnt
+        return cand_entities, cand_entities_ids, cand_entities_scores, cand_entities_labels, not_in_universe_cnt
 
 
 class TFRecordsGenerator(object):
@@ -493,6 +502,7 @@ class TFRecordsGenerator(object):
             number of ements"""
             return tf.train.FeatureList(feature=[_int64list_feature(v) for v in values])
 
+
         def _floatlist_feature_list(values):
             """ like the chars = [[0.1,0.2,0.3], [0.4,0.5]] a feature list where each feature can have variable
             number of ements"""
@@ -512,6 +522,7 @@ class TFRecordsGenerator(object):
                 "begin_span": _int64_feature_list(sample.begin_spans),
                 "end_span": _int64_feature_list(sample.end_spans),
                 "cand_entities": _int64list_feature_list(sample.cand_entities),
+                "cand_entities_ids": _int64list_feature_list(sample.cand_entities_ids),
                 "cand_entities_scores": _floatlist_feature_list(sample.cand_entities_scores),
                 "cand_entities_labels": _int64list_feature_list(sample.cand_entities_labels),
                 "cand_entities_len": _int64_feature_list(sample.cand_entities_len),
@@ -549,7 +560,11 @@ class TFRecordsGenerator(object):
 
 def create_tfrecords():
     new_dataset_folder = config.base_folder+"data/new_datasets/"
-    datasets = [os.path.basename(os.path.normpath(d)) for d in util.get_immediate_files(new_dataset_folder)]
+    # datasets = [os.path.basename(os.path.normpath(d)) for d in util.get_immediate_files(new_dataset_folder)]
+    datasets = [
+        os.path.basename(os.path.normpath(d))
+        for d in ["aida_dev.txt",    "aida_test.txt",   "aida_train.txt"]
+    ]
     print("datasets: ", datasets)
 
     tfrecords_generator = TFRecordsGenerator()
@@ -743,7 +758,6 @@ if __name__ == "__main__":
     vocabularyCounter = VocabularyCounter()
     vocabularyCounter.count_datasets_vocabulary()
     if args.create_entity_universe:
-        create_entity_universe(gmonly_files=[], allspans_files=['aida_train.txt', 'aida_dev.txt', 'aida_test.txt' # ])
-                                                                , 'ace2004.txt', 'aquaint.txt', 'msnbc.txt'])
+        create_entity_universe(gmonly_files=[], allspans_files=['aida_train.txt', 'aida_dev.txt', 'aida_test.txt'])
     else:
         create_tfrecords()
