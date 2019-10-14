@@ -127,6 +127,7 @@ class Model(BaseModel):
         # "boundaries" mean use x_q and x_r.   "head" means use also the head mechanism \hat(x)^m (formula (3))
         if self.args.span_emb.find("boundaries") != -1:
             # shape (batch, num_of_cand_spans, emb)
+            #boundaries_input_vecs = tf.Print(boundaries_input_vecs, [tf.shape(self.words), self.words_len, self.begin_span, self.end_span], 'SHAPES')
             mention_start_emb = tf.gather_nd(boundaries_input_vecs, tf.stack(
                 [tf.tile(tf.expand_dims(tf.range(tf.shape(self.begin_span)[0]), 1), [1, tf.shape(self.begin_span)[1]]),
                  self.begin_span], 2))  # extracts the x_q embedding for each candidate span

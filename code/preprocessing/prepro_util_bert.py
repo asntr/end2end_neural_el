@@ -414,10 +414,12 @@ SampleEncoded = namedtuple("SampleEncoded",
                                 ["chunk_id",
                                 "words", 'words_len', 'mask_ids', 'segs_ids',   # list,  scalar
                                 'begin_spans', "end_spans",  'spans_len',   # the first 2 are lists, last is scalar
-                                "cand_entities", "cand_entities_scores", 'cand_entities_labels',  # lists of lists
+                                "cand_entities", "cand_entities_ids", "cand_entities_mask", "cand_entities_segments",
+                                "cand_entities_scores", 'cand_entities_labels',  # lists of lists
                                 'cand_entities_len',  # list
                                 "ground_truth", "ground_truth_len",
                                 'begin_gm', 'end_gm'])  # list
+
 
 
 class EncoderGenerator(object):
@@ -428,6 +430,7 @@ class EncoderGenerator(object):
         self._generator = SamplesGenerator()
         self._batcher = create_tokenizer_from_hub_module()
         self._wikiid2nnid = util.load_wikiid2nnid(args.entity_extension)
+        self._wikii2summary = util.load_entity_summary_map()
 
     def set_gmonly_mode(self):
         self._generator.set_gmonly_mode()
@@ -446,11 +449,19 @@ class EncoderGenerator(object):
         cand_entities_not_in_universe_cnt = 0
         samples_with_errors = 0
         for sample in self._generator.process(filepath):
-            words = np.array(self._batcher.convert_tokens_to_ids(['[CLS]'] + [
-                w if w in self._batcher.vocab else '[UNK]' for w in sample.chunk_words
-            ] + ['[SEP]']))
-            segs_ids = np.zeros_like(words)
-            mask = np.ones_like(words)
+            bert_tokens = []
+            label_to_token_mapping = []
+            bert_tokens.append("[CLS]")
+            for token in sample.chunk_words:
+               label_to_token_mapping.append(len(bert_tokens) - 1)
+               bert_tokens.extend(self._batcher.tokenize(token))
+            label_to_token_mapping.append(len(bert_tokens) - 1)
+            bert_tokens.append("[SEP]")
+
+            segs_ids = np.zeros_like(bert_tokens, dtype=np.int32)
+            mask = np.ones_like(bert_tokens, dtype=np.int32)
+
+            words = self._batcher.convert_tokens_to_ids(bert_tokens)
 
             ground_truth_enc = [self._wikiid2nnid[gt] if gt in self._wikiid2nnid else self._wikiid2nnid["<u>"]
                             for gt in sample.ground_truth]
@@ -462,16 +473,26 @@ class EncoderGenerator(object):
                 len(sample.begin_gm) != len(ground_truth_enc):
                 samples_with_errors += 1
                 continue
+
+            #print('-' * 100)
+            #print(bert_tokens, sample.chunk_words)
+            #print(sample.begin_gm, sample.end_gm, label_to_token_mapping)
+            begin_gm = list(map(lambda x: label_to_token_mapping[x], sample.begin_gm))
+            end_gm = list(map(lambda x: label_to_token_mapping[x], sample.end_gm))
+
             if isinstance(sample, GmonlySample):
-                cand_entities, cand_entities_scores, cand_entities_labels, not_in_universe_cnt = \
+                (cand_entities, cand_entities_scores,
+                    cand_entities_ids, cand_entities_segments, cand_entities_mask,
+                    cand_entities_labels, not_in_universe_cnt) = \
                     self._encode_cand_entities_and_labels(
                         sample.cand_entities, sample.cand_entities_scores, sample.ground_truth)
 
                 yield SampleEncoded(chunk_id=sample.chunk_id,
                                     words=words, words_len=len(words) - 2, mask_ids=mask, segs_ids=segs_ids,
-                                    begin_spans=sample.begin_gm, end_spans=sample.end_gm, spans_len=len(sample.begin_gm),
-                                    cand_entities=cand_entities, cand_entities_scores=cand_entities_scores,
-                                    cand_entities_labels=cand_entities_labels,
+                                    begin_spans=begin_gm, end_spans=end_gm, spans_len=len(sample.begin_gm),
+                                    cand_entities=cand_entities,
+                                    cand_entities_ids=cand_entities_ids, cand_entities_mask=cand_entities_mask, cand_entities_segments=cand_entities_segments,
+                                    cand_entities_scores=cand_entities_scores, cand_entities_labels=cand_entities_labels,
                                     cand_entities_len=[len(t) for t in cand_entities],
                                     ground_truth=ground_truth_enc, ground_truth_len=len(sample.ground_truth),
                                     begin_gm=[], end_gm=[])
@@ -480,27 +501,34 @@ class EncoderGenerator(object):
                 if len(sample.begin_spans) != len(sample.end_spans):
                     samples_with_errors += 1
                     continue
+
+                begin_spans = list(map(lambda x: label_to_token_mapping[x], sample.begin_spans))
+                end_spans = list(map(lambda x: label_to_token_mapping[x], sample.end_spans))
                 # for each span i have the gt or the value -1 if this span is not a gm
                 # and then i work in the same way as above
                 span_ground_truth = []
-                gm_spans = list(zip(sample.begin_gm, sample.end_gm))   # [(3, 5), (10, 11), (15, 18)]
-                for left, right in zip(sample.begin_spans, sample.end_spans):
+                gm_spans = list(zip(begin_gm, end_gm))   # [(3, 5), (10, 11), (15, 18)]
+                for left, right in zip(begin_spans, end_spans):
                     if (left, right) in gm_spans:
                         span_ground_truth.append(sample.ground_truth[gm_spans.index((left, right))])
                     else:
                         span_ground_truth.append(-1)   # this span is not a gm
-                cand_entities, cand_entities_scores, cand_entities_labels, not_in_universe_cnt = \
+                (cand_entities, cand_entities_scores,
+                    cand_entities_ids, cand_entities_segments, cand_entities_mask,
+                    cand_entities_labels, not_in_universe_cnt) = \
                     self._encode_cand_entities_and_labels(
                         sample.cand_entities, sample.cand_entities_scores, span_ground_truth)
 
                 yield SampleEncoded(chunk_id=sample.chunk_id,
                                     words=words, words_len=len(words) - 2, mask_ids=mask, segs_ids=segs_ids,
-                                    begin_spans=sample.begin_spans, end_spans=sample.end_spans, spans_len=len(sample.begin_spans),
-                                    cand_entities=cand_entities, cand_entities_scores=cand_entities_scores,
+                                    begin_spans=begin_spans, end_spans=end_spans, spans_len=len(sample.begin_spans),
+                                    cand_entities=cand_entities,
+                                    cand_entities_ids=cand_entities_ids, cand_entities_mask=cand_entities_mask, cand_entities_segments=cand_entities_segments,
+                                    cand_entities_scores=cand_entities_scores,
                                     cand_entities_labels=cand_entities_labels,
                                     cand_entities_len=[len(t) for t in cand_entities],
                                     ground_truth=ground_truth_enc, ground_truth_len=len(sample.ground_truth),
-                                    begin_gm=sample.begin_gm, end_gm=sample.end_gm)
+                                    begin_gm=begin_gm, end_gm=end_gm)
 
             cand_entities_not_in_universe_cnt += not_in_universe_cnt
         print("ground_truth_errors_cnt =", ground_truth_errors_cnt)
@@ -518,24 +546,43 @@ class EncoderGenerator(object):
          of candidate entities array) is correct. Returns the filtered cand_entities
         and the corresponding label (they have the same shape)"""
         cand_entities = []
+        cand_entities_ids = []
+        cand_entities_segments = []
+        cand_entities_mask = []
         cand_entities_scores = []
         cand_entities_labels = []
         not_in_universe_cnt = 0
         for cand_ent_l, cand_scores_l, gt in zip(cand_entities_p, cand_entities_scores_p, ground_truth_p):
             ent_l = []
+            ids_l = []
+            mask_l = []
+            seg_l = []
             score_l = []
             label_l = []
             for cand_ent, score in zip(cand_ent_l, cand_scores_l):
                 if cand_ent in self._wikiid2nnid:  # else continue, this entity not in our universe
+                    summary = self._wikii2summary[cand_ent]
+                    tokens = ['[CLS]'] + self._batcher.tokenize(summary)[:8] + ['[SEP]']
+                    ids = self._batcher.convert_tokens_to_ids(tokens)
+                    while len(tokens) < 10:
+                        ids.append(0)
                     ent_l.append(self._wikiid2nnid[cand_ent])
+                    ids_l.extend(ids)
+                    mask_l.extend([1] * 10)
+                    seg_l.extend([0] * 10)
                     score_l.append(score)
                     label_l.append(1 if cand_ent == gt else 0)
                 else:
                     not_in_universe_cnt += 1
             cand_entities.append(ent_l)
+            cand_entities_ids.append(ids_l)
+            cand_entities_segments.append(seg_l)
+            cand_entities_mask.append(mask_l)
             cand_entities_scores.append(score_l)
             cand_entities_labels.append(label_l)
-        return cand_entities, cand_entities_scores, cand_entities_labels, not_in_universe_cnt
+        return (cand_entities, cand_entities_scores,
+            cand_entities_ids, cand_entities_segments, cand_entities_mask,
+            cand_entities_labels, not_in_universe_cnt)
 
 
 class TFRecordsGenerator(object):
@@ -600,6 +647,9 @@ class TFRecordsGenerator(object):
                 "begin_span": _int64_feature_list(sample.begin_spans),
                 "end_span": _int64_feature_list(sample.end_spans),
                 "cand_entities": _int64list_feature_list(sample.cand_entities),
+                "cand_entities_ids": _int64list_feature_list(sample.cand_entities_ids),
+                "cand_entities_mask": _int64list_feature_list(sample.cand_entities_mask),
+                "cand_entities_segments": _int64list_feature_list(sample.cand_entities_segments),
                 "cand_entities_scores": _floatlist_feature_list(sample.cand_entities_scores),
                 "cand_entities_labels": _int64list_feature_list(sample.cand_entities_labels),
                 "cand_entities_len": _int64_feature_list(sample.cand_entities_len),
@@ -637,7 +687,10 @@ class TFRecordsGenerator(object):
 
 def create_tfrecords():
     new_dataset_folder = config.base_folder+"data/new_datasets/"
-    datasets = [os.path.basename(os.path.normpath(d)) for d in util.get_immediate_files(new_dataset_folder)]
+    datasets = [
+        os.path.basename(os.path.normpath(d))
+        for d in ["aida_dev.txt", "aida_test.txt", "aida_train.txt"]
+    ]
     print("datasets: ", datasets)
 
     tfrecords_generator = TFRecordsGenerator()
